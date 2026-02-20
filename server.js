@@ -1,4 +1,4 @@
-// server.js - The Brain of KS1 Escrow Pay (Updated with Fixed CORS)
+// server.js - KS1 Escrow Pay Backend (Fixed CORS - Open for Testing)
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -7,32 +7,17 @@ const cors = require('cors');
 
 const app = express();
 
-// --- 🔒 FIXED CORS CONFIGURATION ---
-// This allows your Cloudflare Frontend to talk to this Render Backend
-const allowedOrigins = [
-  'https://ks1-escrow-pay.pages.dev',       // Your Cloudflare URL
-  'https://ks1-escrow-pay.netlify.app',     // Fallback if you use Netlify
-  'http://localhost:3000',                  // For local testing
-  'http://localhost:5500',                  // Alternative local port
-  'https://ks1-escrow-backend.onrender.com' // Self-reference
-];
-
+// --- 🔒 FIXED CORS CONFIGURATION (OPEN FOR TESTING) ---
+// This allows ANY domain to talk to this backend temporarily for debugging
 app.use(cors({
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl/postman)
-    if (!origin) return callback(null, true);
-    
-    if (allowedOrigins.indexOf(origin) !== -1 || origin.includes('pages.dev')) {
-      callback(null, true);
-    } else {
-      console.log('Blocked by CORS:', origin);
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  origin: '*', // Allows all origins (Cloudflare, Netlify, Localhost, etc.)
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+  credentials: true
 }));
+
+// Handle preflight requests explicitly
+app.options('*', cors());
 
 app.use(express.json());
 
@@ -41,7 +26,10 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/ks1_escrow
 
 mongoose.connect(MONGO_URI)
   .then(() => console.log("✅ Connected to KS1 Database"))
-  .catch(err => console.error("❌ DB Error:", err));
+  .catch(err => {
+    console.error("❌ DB Connection Error:", err);
+    process.exit(1);
+  });
 
 // --- 📝 DATABASE MODELS ---
 
@@ -100,31 +88,46 @@ app.post('/api/register', async (req, res) => {
     await User.create({ phone_number, password: hashedPassword });
     res.json({ success: true, message: "Welcome to Alkebulan freedom." });
   } catch (err) {
-    console.error("Register Error:", err);
-    res.status(400).json({ error: "Phone number already exists or invalid data." });
+    console.error("Register Error Details:", err);
+    // Check specifically for duplicate key error
+    if (err.code === 11000) {
+      return res.status(400).json({ error: "Phone number already exists." });
+    }
+    res.status(500).json({ error: "Server error during registration." });
   }
 });
 
 // 2. Login User
 app.post('/api/login', async (req, res) => {
-  const { phone_number, password } = req.body;
-  
-  // Hardcoded Admin Check
-  if(phone_number === "admin" && password === "admin123") {
-    return res.json({ success: true, user: { id: 'admin', phone_number: 'Admin', isAdmin: true } });
+  try {
+    const { phone_number, password } = req.body;
+    
+    // Hardcoded Admin Check
+    if(phone_number === "admin" && password === "admin123") {
+      return res.json({ success: true, user: { id: 'admin', phone_number: 'Admin', isAdmin: true } });
+    }
+    
+    const user = await User.findOne({ phone_number });
+    if (!user) {
+      return res.status(401).json({ error: "User not found." });
+    }
+    if (!(await bcrypt.compare(password, user.password))) {
+      return res.status(401).json({ error: "Invalid password." });
+    }
+    res.json({ success: true, user: { id: user._id, phone_number: user.phone_number } });
+  } catch (err) {
+    console.error("Login Error:", err);
+    res.status(500).json({ error: "Server error during login." });
   }
-  
-  const user = await User.findOne({ phone_number });
-  if (!user || !(await bcrypt.compare(password, user.password))) {
-    return res.status(401).json({ error: "Invalid credentials." });
-  }
-  res.json({ success: true, user: { id: user._id, phone_number: user.phone_number } });
 });
 
 // 3. Create Transaction
 app.post('/api/transactions', async (req, res) => {
   try {
     const { buyer_id, seller_phone, amount, description } = req.body;
+    if (!buyer_id || !seller_phone || !amount) {
+      return res.status(400).json({ error: "Missing required fields." });
+    }
     const fee = parseFloat((amount * 0.01).toFixed(2)); // 1% fee
     const txID = generateTxID();
 
@@ -135,6 +138,7 @@ app.post('/api/transactions', async (req, res) => {
     
     res.json({ success: true, transaction });
   } catch (err) {
+    console.error("Create Tx Error:", err);
     res.status(500).json({ error: "Failed to create transaction." });
   }
 });
@@ -145,6 +149,7 @@ app.get('/api/transactions/:userId', async (req, res) => {
     const txs = await Transaction.find({ buyer_id: req.params.userId }).sort({ created_at: -1 });
     res.json(txs);
   } catch (err) {
+    console.error("Get Tx Error:", err);
     res.status(500).json({ error: "Failed to fetch transactions." });
   }
 });
@@ -153,9 +158,13 @@ app.get('/api/transactions/:userId', async (req, res) => {
 app.post('/api/payments/confirm', async (req, res) => {
   try {
     const { transaction_id, momo_reference } = req.body;
+    if (!transaction_id || !momo_reference) {
+      return res.status(400).json({ error: "Missing details." });
+    }
     await Payment.create({ transaction_id, momo_reference, verified: false });
     res.json({ success: true, message: "Payment submitted for verification." });
   } catch (err) {
+    console.error("Payment Confirm Error:", err);
     res.status(500).json({ error: "Failed to submit payment." });
   }
 });
@@ -190,6 +199,7 @@ app.get('/api/admin/data', async (req, res) => {
     const commissions = await Commission.find();
     res.json({ transactions, payments, commissions });
   } catch (err) {
+    console.error("Admin Data Error:", err);
     res.status(500).json({ error: "Failed to load admin data." });
   }
 });
