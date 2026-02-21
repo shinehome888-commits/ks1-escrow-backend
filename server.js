@@ -1,4 +1,4 @@
-// server.js - KS1 Escrow Pay (FINAL VERSION WITH HEALTH CHECK)
+// server.js - KS1 Escrow Pay (Stable Version - No Credentials)
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -7,12 +7,12 @@ const cors = require('cors');
 
 const app = express();
 
-// --- 🔒 OPEN CORS (Allow Everything) ---
+// --- 🔒 STABLE CORS CONFIGURATION ---
+// Removed 'credentials' to prevent crashes with wildcard origin
 app.use(cors({
   origin: '*', 
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
-  credentials: true
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
 }));
 app.options('*', cors()); 
 
@@ -51,7 +51,7 @@ const Commission = mongoose.model('Commission', CommissionSchema);
 
 const generateTxID = () => `KS1-${Math.floor(100000 + Math.random() * 900000)}`;
 
-// --- ❤️ HEALTH CHECK ROUTE (THIS WAS MISSING!) ---
+// --- ❤️ HEALTH CHECK ---
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK', 
