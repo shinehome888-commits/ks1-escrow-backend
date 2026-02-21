@@ -1,4 +1,4 @@
-// server.js - KS1 Escrow Pay Backend (Fixed CORS - Open for Testing)
+// server.js - KS1 Escrow Pay (FINAL VERSION WITH HEALTH CHECK)
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -7,191 +7,136 @@ const cors = require('cors');
 
 const app = express();
 
-// --- 🔒 FIXED CORS CONFIGURATION (OPEN FOR TESTING) ---
-// This allows ANY domain to talk to this backend temporarily for debugging
+// --- 🔒 OPEN CORS (Allow Everything) ---
 app.use(cors({
-  origin: '*', // Allows all origins (Cloudflare, Netlify, Localhost, etc.)
+  origin: '*', 
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   credentials: true
 }));
-
-// Handle preflight requests explicitly
-app.options('*', cors());
+app.options('*', cors()); 
 
 app.use(express.json());
 
 // --- 🗄️ DATABASE CONNECTION ---
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/ks1_escrow';
+const MONGO_URI = process.env.MONGO_URI;
 
-mongoose.connect(MONGO_URI)
-  .then(() => console.log("✅ Connected to KS1 Database"))
-  .catch(err => {
-    console.error("❌ DB Connection Error:", err);
-    process.exit(1);
-  });
+if (!MONGO_URI) {
+  console.error("❌ CRITICAL: MONGO_URI is missing!");
+  process.exit(1);
+}
 
-// --- 📝 DATABASE MODELS ---
-
-const UserSchema = new mongoose.Schema({
-  phone_number: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
-  created_at: { type: Date, default: Date.now }
+console.log("🔄 Connecting to MongoDB...");
+mongoose.connect(MONGO_URI, {
+  serverSelectionTimeoutMS: 5000,
+  socketTimeoutMS: 45000,
+})
+.then(() => console.log("✅ Connected to KS1 Database SUCCESSFULLY"))
+.catch(err => {
+  console.error("❌ FATAL DB ERROR:", err.message);
 });
+
+// --- 📝 MODELS ---
+const UserSchema = new mongoose.Schema({ phone_number: { type: String, required: true, unique: true }, password: { type: String, required: true }, created_at: { type: Date, default: Date.now } });
 const User = mongoose.model('User', UserSchema);
 
-const TransactionSchema = new mongoose.Schema({
-  transaction_id: { type: String, required: true, unique: true },
-  buyer_id: { type: String }, 
-  seller_phone: { type: String, required: true },
-  amount: { type: Number, required: true },
-  fee: { type: Number, required: true },
-  status: { 
-    type: String, 
-    enum: ['pending_payment', 'funded', 'delivered', 'completed', 'disputed', 'cancelled'], 
-    default: 'pending_payment' 
-  },
-  description: String,
-  created_at: { type: Date, default: Date.now }
-});
+const TransactionSchema = new mongoose.Schema({ transaction_id: { type: String, required: true, unique: true }, buyer_id: { type: String }, seller_phone: { type: String, required: true }, amount: { type: Number, required: true }, fee: { type: Number, required: true }, status: { type: String, enum: ['pending_payment', 'funded', 'delivered', 'completed', 'disputed', 'cancelled'], default: 'pending_payment' }, description: String, created_at: { type: Date, default: Date.now } });
 const Transaction = mongoose.model('Transaction', TransactionSchema);
 
-const PaymentSchema = new mongoose.Schema({
-  transaction_id: { type: String, required: true },
-  momo_reference: String,
-  verified: { type: Boolean, default: false },
-  created_at: { type: Date, default: Date.now }
-});
+const PaymentSchema = new mongoose.Schema({ transaction_id: { type: String, required: true }, momo_reference: String, verified: { type: Boolean, default: false }, created_at: { type: Date, default: Date.now } });
 const Payment = mongoose.model('Payment', PaymentSchema);
 
-const CommissionSchema = new mongoose.Schema({
-  transaction_id: { type: String, required: true },
-  amount: { type: Number, required: true },
-  status: { type: String, enum: ['pending', 'paid'], default: 'pending' },
-  destination_number: { type: String, default: "+233240254680" }
-});
+const CommissionSchema = new mongoose.Schema({ transaction_id: { type: String, required: true }, amount: { type: Number, required: true }, status: { type: String, enum: ['pending', 'paid'], default: 'pending' }, destination_number: { type: String, default: "+233240254680" } });
 const Commission = mongoose.model('Commission', CommissionSchema);
 
-// --- 🔧 HELPER FUNCTIONS ---
 const generateTxID = () => `KS1-${Math.floor(100000 + Math.random() * 900000)}`;
 
-// --- 🚦 API ROUTES ---
+// --- ❤️ HEALTH CHECK ROUTE (THIS WAS MISSING!) ---
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    message: 'KS1 Backend is Running!', 
+    db: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected',
+    timestamp: new Date().toISOString()
+  });
+});
 
-// 1. Register User
+// --- 🚦 ROUTES ---
 app.post('/api/register', async (req, res) => {
   try {
     const { phone_number, password } = req.body;
-    if (!phone_number || !password) {
-      return res.status(400).json({ error: "Phone and password required." });
-    }
+    if (!phone_number || !password) return res.status(400).json({ error: "Missing fields" });
     const hashedPassword = await bcrypt.hash(password, 10);
     await User.create({ phone_number, password: hashedPassword });
-    res.json({ success: true, message: "Welcome to Alkebulan freedom." });
+    res.json({ success: true, message: "Welcome to Alkebulan." });
   } catch (err) {
-    console.error("Register Error Details:", err);
-    // Check specifically for duplicate key error
-    if (err.code === 11000) {
-      return res.status(400).json({ error: "Phone number already exists." });
-    }
-    res.status(500).json({ error: "Server error during registration." });
+    console.error("Register Error:", err);
+    res.status(400).json({ error: err.code === 11000 ? "Number exists" : "Server error" });
   }
 });
 
-// 2. Login User
 app.post('/api/login', async (req, res) => {
   try {
     const { phone_number, password } = req.body;
-    
-    // Hardcoded Admin Check
-    if(phone_number === "admin" && password === "admin123") {
-      return res.json({ success: true, user: { id: 'admin', phone_number: 'Admin', isAdmin: true } });
-    }
-    
+    if(phone_number === "admin" && password === "admin123") return res.json({ success: true, user: { id: 'admin', phone_number: 'Admin', isAdmin: true } });
     const user = await User.findOne({ phone_number });
-    if (!user) {
-      return res.status(401).json({ error: "User not found." });
-    }
-    if (!(await bcrypt.compare(password, user.password))) {
-      return res.status(401).json({ error: "Invalid password." });
-    }
+    if (!user || !(await bcrypt.compare(password, user.password))) return res.status(401).json({ error: "Invalid credentials" });
     res.json({ success: true, user: { id: user._id, phone_number: user.phone_number } });
   } catch (err) {
     console.error("Login Error:", err);
-    res.status(500).json({ error: "Server error during login." });
+    res.status(500).json({ error: "Server error" });
   }
 });
 
-// 3. Create Transaction
 app.post('/api/transactions', async (req, res) => {
   try {
     const { buyer_id, seller_phone, amount, description } = req.body;
-    if (!buyer_id || !seller_phone || !amount) {
-      return res.status(400).json({ error: "Missing required fields." });
-    }
-    const fee = parseFloat((amount * 0.01).toFixed(2)); // 1% fee
+    if (!buyer_id || !seller_phone || !amount) return res.status(400).json({ error: "Missing fields" });
+    const fee = parseFloat((amount * 0.01).toFixed(2));
     const txID = generateTxID();
-
-    const transaction = await Transaction.create({
-      transaction_id: txID, buyer_id, seller_phone, amount, fee, description
-    });
+    const transaction = await Transaction.create({ transaction_id: txID, buyer_id, seller_phone, amount, fee, description });
     await Commission.create({ transaction_id: txID, amount: fee });
-    
     res.json({ success: true, transaction });
   } catch (err) {
-    console.error("Create Tx Error:", err);
-    res.status(500).json({ error: "Failed to create transaction." });
+    console.error("Transaction Error:", err);
+    res.status(500).json({ error: "Failed to create transaction" });
   }
 });
 
-// 4. Get User Transactions
 app.get('/api/transactions/:userId', async (req, res) => {
   try {
     const txs = await Transaction.find({ buyer_id: req.params.userId }).sort({ created_at: -1 });
     res.json(txs);
   } catch (err) {
-    console.error("Get Tx Error:", err);
-    res.status(500).json({ error: "Failed to fetch transactions." });
+    res.status(500).json({ error: "Fetch failed" });
   }
 });
 
-// 5. Confirm Payment (User)
 app.post('/api/payments/confirm', async (req, res) => {
   try {
     const { transaction_id, momo_reference } = req.body;
-    if (!transaction_id || !momo_reference) {
-      return res.status(400).json({ error: "Missing details." });
-    }
     await Payment.create({ transaction_id, momo_reference, verified: false });
-    res.json({ success: true, message: "Payment submitted for verification." });
+    res.json({ success: true });
   } catch (err) {
-    console.error("Payment Confirm Error:", err);
-    res.status(500).json({ error: "Failed to submit payment." });
+    res.status(500).json({ error: "Payment submit failed" });
   }
 });
 
-// 6. Confirm Delivery (Buyer)
 app.put('/api/transactions/:id/confirm-delivery', async (req, res) => {
   try {
     await Transaction.findByIdAndUpdate(req.params.id, { status: 'delivered' });
     res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to confirm delivery." });
-  }
+  } catch (err) { res.status(500).json({ error: "Confirm failed" }); }
 });
 
-// 7. Open Dispute
 app.put('/api/transactions/:id/dispute', async (req, res) => {
   try {
     await Transaction.findByIdAndUpdate(req.params.id, { status: 'disputed' });
     res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to open dispute." });
-  }
+  } catch (err) { res.status(500).json({ error: "Dispute failed" }); }
 });
 
-// --- 👑 ADMIN ROUTES ---
-
-// 8. Get All Admin Data
+// Admin
 app.get('/api/admin/data', async (req, res) => {
   try {
     const transactions = await Transaction.find().sort({ created_at: -1 });
@@ -200,45 +145,38 @@ app.get('/api/admin/data', async (req, res) => {
     res.json({ transactions, payments, commissions });
   } catch (err) {
     console.error("Admin Data Error:", err);
-    res.status(500).json({ error: "Failed to load admin data." });
+    res.status(500).json({ error: "Admin data failed" });
   }
 });
 
-// 9. Verify Payment
 app.put('/api/admin/verify', async (req, res) => {
   try {
     const { transaction_id } = req.body;
     await Payment.findOneAndUpdate({ transaction_id }, { verified: true });
     await Transaction.findOneAndUpdate({ transaction_id }, { status: 'funded' });
     res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to verify payment." });
-  }
+  } catch (err) { res.status(500).json({ error: "Verify failed" }); }
 });
 
-// 10. Release Funds
 app.put('/api/admin/release', async (req, res) => {
   try {
     const { transaction_id } = req.body;
     await Transaction.findOneAndUpdate({ transaction_id }, { status: 'completed' });
     await Commission.findOneAndUpdate({ transaction_id }, { status: 'paid' });
     res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to release funds." });
-  }
+  } catch (err) { res.status(500).json({ error: "Release failed" }); }
 });
 
-// 11. Refund Buyer
 app.put('/api/admin/refund', async (req, res) => {
   try {
     const { transaction_id } = req.body;
     await Transaction.findOneAndUpdate({ transaction_id }, { status: 'cancelled' });
     res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to refund." });
-  }
+  } catch (err) { res.status(500).json({ error: "Refund failed" }); }
 });
 
-// --- 🚀 START SERVER ---
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 KS1 Escrow Pay running on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 KS1 Escrow Pay running on port ${PORT}`);
+  console.log(`✅ Health Check available at /health`);
+});
