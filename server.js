@@ -1,4 +1,4 @@
-// server.js - KS1 Escrow Pay (Final Version with Buyer Phone in Disputes)
+// server.js - KS1 Escrow Pay (Ultimate Fix: Auto-Fills Buyer Phone for ALL Disputes)
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -39,11 +39,10 @@ mongoose.connect(MONGO_URI, {
 const UserSchema = new mongoose.Schema({ phone_number: { type: String, required: true, unique: true }, password: { type: String, required: true }, created_at: { type: Date, default: Date.now } });
 const User = mongoose.model('User', UserSchema);
 
-// UPDATED: Added buyer_phone field to store the phone number directly in the transaction
 const TransactionSchema = new mongoose.Schema({
   transaction_id: { type: String, required: true, unique: true },
   buyer_id: { type: String },
-  buyer_phone: { type: String }, // NEW FIELD
+  buyer_phone: { type: String }, 
   seller_phone: { type: String, required: true },
   amount: { type: Number, required: true },
   fee: { type: Number, required: true },
@@ -105,13 +104,12 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// 3. Create Transaction (NOW SAVES BUYER PHONE)
+// 3. Create Transaction (Saves Buyer Phone)
 app.post('/api/transactions', async (req, res) => {
   try {
     const { buyer_id, seller_phone, amount, description } = req.body;
     if (!buyer_id || !seller_phone || !amount) return res.status(400).json({ error: "Missing fields" });
     
-    // Find the buyer's phone number from the database
     const buyer = await User.findById(buyer_id);
     const buyerPhoneNumber = buyer ? buyer.phone_number : 'Unknown';
 
@@ -121,7 +119,7 @@ app.post('/api/transactions', async (req, res) => {
     const transaction = await Transaction.create({ 
       transaction_id: txID, 
       buyer_id, 
-      buyer_phone: buyerPhoneNumber, // SAVING THE PHONE NUMBER HERE
+      buyer_phone: buyerPhoneNumber, 
       seller_phone, 
       amount, 
       fee, 
@@ -172,15 +170,33 @@ app.put('/api/transactions/:id/dispute', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Dispute failed" }); }
 });
 
-// --- 👑 ADMIN ROUTES ---
+// --- 👑 ADMIN ROUTES (FIXED TO SHOW BUYER PHONE) ---
 
-// 8. Get All Admin Data
+// 8. Get All Admin Data (AUTO-FILLS MISSING BUYER PHONES)
 app.get('/api/admin/data', async (req, res) => {
   try {
-    const transactions = await Transaction.find().sort({ created_at: -1 });
+    let transactions = await Transaction.find().sort({ created_at: -1 });
+    
+    // FIX: Loop through transactions and find missing buyer phones
+    const populatedTransactions = await Promise.all(transactions.map(async (tx) => {
+      let txObj = tx.toObject();
+      
+      // If buyer_phone is missing or empty, look it up from User collection
+      if (!txObj.buyer_phone || txObj.buyer_phone === 'Unknown') {
+        const buyer = await User.findById(txObj.buyer_id);
+        if (buyer) {
+          txObj.buyer_phone = buyer.phone_number;
+          // Optional: Update the database so we don't have to look it up next time
+          await Transaction.findByIdAndUpdate(tx._id, { buyer_phone: buyer.phone_number });
+        }
+      }
+      return txObj;
+    }));
+
     const payments = await Payment.find();
     const commissions = await Commission.find();
-    res.json({ transactions, payments, commissions });
+    
+    res.json({ transactions: populatedTransactions, payments, commissions });
   } catch (err) {
     console.error("Admin Data Error:", err);
     res.status(500).json({ error: "Admin data failed" });
@@ -233,7 +249,5 @@ app.delete('/api/admin/delete-payment/:txId', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 KS1 Escrow Pay running on port ${PORT}`);
-  console.log(`✅ Health Check available at /health`);
-  console.log(`✅ Delete Payment available at /api/admin/delete-payment/:txId`);
-  console.log(`✅ Buyer Phone Number now saved in all new transactions!`);
+  console.log(`✅ Admin Data now AUTO-FILLS Buyer Phone Numbers!`);
 });
