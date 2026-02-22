@@ -1,4 +1,4 @@
-// server.js - KS1 Escrow Pay (Stable Version - No Credentials)
+// server.js - KS1 Escrow Pay (Final Version with Delete Feature)
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -7,8 +7,7 @@ const cors = require('cors');
 
 const app = express();
 
-// --- 🔒 STABLE CORS CONFIGURATION ---
-// Removed 'credentials' to prevent crashes with wildcard origin
+// --- 🔒 CORS CONFIGURATION ---
 app.use(cors({
   origin: '*', 
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
@@ -171,12 +170,33 @@ app.put('/api/admin/refund', async (req, res) => {
   try {
     const { transaction_id } = req.body;
     await Transaction.findOneAndUpdate({ transaction_id }, { status: 'cancelled' });
+    // Optional: Remove payment record on refund/cancel if desired, but keeping it for audit is usually better.
+    // To strictly delete as requested in some contexts, you could add: await Payment.findOneAndDelete({ transaction_id });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: "Refund failed" }); }
+});
+
+// --- 🗑️ NEW: DELETE PAYMENT ROUTE ---
+app.delete('/api/admin/delete-payment/:txId', async (req, res) => {
+  try {
+    const { txId } = req.params;
+    // Delete the payment record
+    await Payment.findOneAndDelete({ transaction_id: txId });
+    // Also delete the associated transaction to clean up completely
+    await Transaction.findOneAndDelete({ transaction_id: txId });
+    // Also delete commission if exists
+    await Commission.findOneAndDelete({ transaction_id: txId });
+    
+    res.json({ success: true, message: "Deleted successfully" });
+  } catch (err) {
+    console.error("Delete Error:", err);
+    res.status(500).json({ error: "Failed to delete" });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 KS1 Escrow Pay running on port ${PORT}`);
   console.log(`✅ Health Check available at /health`);
+  console.log(`✅ Delete Payment available at /api/admin/delete-payment/:txId`);
 });
