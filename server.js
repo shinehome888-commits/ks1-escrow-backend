@@ -1,4 +1,4 @@
-// server.js - KS1 Escrow Pay (Final Version with Delete Feature)
+// server.js - KS1 Escrow Pay (Final Version with Buyer Phone in Disputes)
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -39,7 +39,22 @@ mongoose.connect(MONGO_URI, {
 const UserSchema = new mongoose.Schema({ phone_number: { type: String, required: true, unique: true }, password: { type: String, required: true }, created_at: { type: Date, default: Date.now } });
 const User = mongoose.model('User', UserSchema);
 
-const TransactionSchema = new mongoose.Schema({ transaction_id: { type: String, required: true, unique: true }, buyer_id: { type: String }, seller_phone: { type: String, required: true }, amount: { type: Number, required: true }, fee: { type: Number, required: true }, status: { type: String, enum: ['pending_payment', 'funded', 'delivered', 'completed', 'disputed', 'cancelled'], default: 'pending_payment' }, description: String, created_at: { type: Date, default: Date.now } });
+// UPDATED: Added buyer_phone field to store the phone number directly in the transaction
+const TransactionSchema = new mongoose.Schema({
+  transaction_id: { type: String, required: true, unique: true },
+  buyer_id: { type: String },
+  buyer_phone: { type: String }, // NEW FIELD
+  seller_phone: { type: String, required: true },
+  amount: { type: Number, required: true },
+  fee: { type: Number, required: true },
+  status: { 
+    type: String, 
+    enum: ['pending_payment', 'funded', 'delivered', 'completed', 'disputed', 'cancelled'], 
+    default: 'pending_payment' 
+  },
+  description: String,
+  created_at: { type: Date, default: Date.now }
+});
 const Transaction = mongoose.model('Transaction', TransactionSchema);
 
 const PaymentSchema = new mongoose.Schema({ transaction_id: { type: String, required: true }, momo_reference: String, verified: { type: Boolean, default: false }, created_at: { type: Date, default: Date.now } });
@@ -61,6 +76,8 @@ app.get('/health', (req, res) => {
 });
 
 // --- 🚦 ROUTES ---
+
+// 1. Register User
 app.post('/api/register', async (req, res) => {
   try {
     const { phone_number, password } = req.body;
@@ -74,6 +91,7 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
+// 2. Login User
 app.post('/api/login', async (req, res) => {
   try {
     const { phone_number, password } = req.body;
@@ -87,13 +105,28 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
+// 3. Create Transaction (NOW SAVES BUYER PHONE)
 app.post('/api/transactions', async (req, res) => {
   try {
     const { buyer_id, seller_phone, amount, description } = req.body;
     if (!buyer_id || !seller_phone || !amount) return res.status(400).json({ error: "Missing fields" });
+    
+    // Find the buyer's phone number from the database
+    const buyer = await User.findById(buyer_id);
+    const buyerPhoneNumber = buyer ? buyer.phone_number : 'Unknown';
+
     const fee = parseFloat((amount * 0.01).toFixed(2));
     const txID = generateTxID();
-    const transaction = await Transaction.create({ transaction_id: txID, buyer_id, seller_phone, amount, fee, description });
+    
+    const transaction = await Transaction.create({ 
+      transaction_id: txID, 
+      buyer_id, 
+      buyer_phone: buyerPhoneNumber, // SAVING THE PHONE NUMBER HERE
+      seller_phone, 
+      amount, 
+      fee, 
+      description 
+    });
     await Commission.create({ transaction_id: txID, amount: fee });
     res.json({ success: true, transaction });
   } catch (err) {
@@ -102,6 +135,7 @@ app.post('/api/transactions', async (req, res) => {
   }
 });
 
+// 4. Get User Transactions
 app.get('/api/transactions/:userId', async (req, res) => {
   try {
     const txs = await Transaction.find({ buyer_id: req.params.userId }).sort({ created_at: -1 });
@@ -111,6 +145,7 @@ app.get('/api/transactions/:userId', async (req, res) => {
   }
 });
 
+// 5. Confirm Payment
 app.post('/api/payments/confirm', async (req, res) => {
   try {
     const { transaction_id, momo_reference } = req.body;
@@ -121,6 +156,7 @@ app.post('/api/payments/confirm', async (req, res) => {
   }
 });
 
+// 6. Confirm Delivery
 app.put('/api/transactions/:id/confirm-delivery', async (req, res) => {
   try {
     await Transaction.findByIdAndUpdate(req.params.id, { status: 'delivered' });
@@ -128,6 +164,7 @@ app.put('/api/transactions/:id/confirm-delivery', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Confirm failed" }); }
 });
 
+// 7. Open Dispute
 app.put('/api/transactions/:id/dispute', async (req, res) => {
   try {
     await Transaction.findByIdAndUpdate(req.params.id, { status: 'disputed' });
@@ -135,7 +172,9 @@ app.put('/api/transactions/:id/dispute', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Dispute failed" }); }
 });
 
-// Admin
+// --- 👑 ADMIN ROUTES ---
+
+// 8. Get All Admin Data
 app.get('/api/admin/data', async (req, res) => {
   try {
     const transactions = await Transaction.find().sort({ created_at: -1 });
@@ -148,6 +187,7 @@ app.get('/api/admin/data', async (req, res) => {
   }
 });
 
+// 9. Verify Payment
 app.put('/api/admin/verify', async (req, res) => {
   try {
     const { transaction_id } = req.body;
@@ -157,6 +197,7 @@ app.put('/api/admin/verify', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Verify failed" }); }
 });
 
+// 10. Release Funds
 app.put('/api/admin/release', async (req, res) => {
   try {
     const { transaction_id } = req.body;
@@ -166,27 +207,22 @@ app.put('/api/admin/release', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Release failed" }); }
 });
 
+// 11. Refund Buyer
 app.put('/api/admin/refund', async (req, res) => {
   try {
     const { transaction_id } = req.body;
     await Transaction.findOneAndUpdate({ transaction_id }, { status: 'cancelled' });
-    // Optional: Remove payment record on refund/cancel if desired, but keeping it for audit is usually better.
-    // To strictly delete as requested in some contexts, you could add: await Payment.findOneAndDelete({ transaction_id });
     res.json({ success: true });
   } catch (err) { res.status(500).json({ error: "Refund failed" }); }
 });
 
-// --- 🗑️ NEW: DELETE PAYMENT ROUTE ---
+// --- 🗑️ 12. DELETE PAYMENT ROUTE ---
 app.delete('/api/admin/delete-payment/:txId', async (req, res) => {
   try {
     const { txId } = req.params;
-    // Delete the payment record
     await Payment.findOneAndDelete({ transaction_id: txId });
-    // Also delete the associated transaction to clean up completely
     await Transaction.findOneAndDelete({ transaction_id: txId });
-    // Also delete commission if exists
     await Commission.findOneAndDelete({ transaction_id: txId });
-    
     res.json({ success: true, message: "Deleted successfully" });
   } catch (err) {
     console.error("Delete Error:", err);
@@ -199,4 +235,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 KS1 Escrow Pay running on port ${PORT}`);
   console.log(`✅ Health Check available at /health`);
   console.log(`✅ Delete Payment available at /api/admin/delete-payment/:txId`);
+  console.log(`✅ Buyer Phone Number now saved in all new transactions!`);
 });
