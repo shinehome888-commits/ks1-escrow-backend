@@ -1,4 +1,4 @@
-// server.js - KS1 Escrow Pay (Ultimate Fix: Auto-Fills Buyer Phone for ALL Disputes)
+// server.js - KS1 Escrow Pay (Stable Version - Fixed Error 500)
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -170,36 +170,21 @@ app.put('/api/transactions/:id/dispute', async (req, res) => {
   } catch (err) { res.status(500).json({ error: "Dispute failed" }); }
 });
 
-// --- 👑 ADMIN ROUTES (FIXED TO SHOW BUYER PHONE) ---
+// --- 👑 ADMIN ROUTES (SAFE & STABLE) ---
 
-// 8. Get All Admin Data (AUTO-FILLS MISSING BUYER PHONES)
+// 8. Get All Admin Data (SIMPLIFIED TO PREVENT CRASH)
 app.get('/api/admin/data', async (req, res) => {
   try {
-    let transactions = await Transaction.find().sort({ created_at: -1 });
-    
-    // FIX: Loop through transactions and find missing buyer phones
-    const populatedTransactions = await Promise.all(transactions.map(async (tx) => {
-      let txObj = tx.toObject();
-      
-      // If buyer_phone is missing or empty, look it up from User collection
-      if (!txObj.buyer_phone || txObj.buyer_phone === 'Unknown') {
-        const buyer = await User.findById(txObj.buyer_id);
-        if (buyer) {
-          txObj.buyer_phone = buyer.phone_number;
-          // Optional: Update the database so we don't have to look it up next time
-          await Transaction.findByIdAndUpdate(tx._id, { buyer_phone: buyer.phone_number });
-        }
-      }
-      return txObj;
-    }));
-
+    // Just fetch the data directly without complex loops
+    const transactions = await Transaction.find().sort({ created_at: -1 });
     const payments = await Payment.find();
     const commissions = await Commission.find();
     
-    res.json({ transactions: populatedTransactions, payments, commissions });
+    res.json({ transactions, payments, commissions });
   } catch (err) {
-    console.error("Admin Data Error:", err);
-    res.status(500).json({ error: "Admin data failed" });
+    console.error("CRITICAL Admin Data Error:", err);
+    // Send a specific error message so we know what happened
+    res.status(500).json({ error: "Failed to load admin data: " + err.message });
   }
 });
 
@@ -249,5 +234,5 @@ app.delete('/api/admin/delete-payment/:txId', async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 KS1 Escrow Pay running on port ${PORT}`);
-  console.log(`✅ Admin Data now AUTO-FILLS Buyer Phone Numbers!`);
+  console.log(`✅ Admin Data endpoint is stable and ready.`);
 });
